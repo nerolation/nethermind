@@ -7,6 +7,9 @@ using Nethermind.Core.Specs;
 using Nethermind.Core.Test.Blockchain;
 using Nethermind.Core.Test.Builders;
 using Nethermind.Evm.GasPolicy;
+using Nethermind.Evm.Test.Helpers;
+using Nethermind.Evm.Tracing;
+using Nethermind.Evm.TransactionProcessing;
 using Nethermind.Specs;
 using Nethermind.Specs.Forks;
 using Nethermind.Specs.Test;
@@ -71,5 +74,80 @@ public class Eip2780Tests
         Block block = await chain.AddBlock(tx);
 
         Assert.That(chain.ReceiptStorage.Get(block)[0].GasUsed, Is.EqualTo(expectedGas));
+    }
+
+    [Test]
+    public void Corrected_sender_recalculates_self_transfer_intrinsic_gas()
+    {
+        using EvmTestHarness harness = new(Eip2780Spec);
+        harness.WorldState.CreateAccount(TestItem.AddressA, 1_000_000);
+        Transaction tx = Build.A.Transaction
+            .WithTo(TestItem.AddressA)
+            .WithValue(0)
+            .WithGasLimit(GasCostOf.TransactionEip2780)
+            .Signed(harness.Ecdsa, TestItem.PrivateKeyA)
+            .WithSenderAddress(TestItem.AddressF)
+            .TestObject;
+        Block block = harness.CreateBlock(tx);
+
+        harness.ExecuteTx(tx, block);
+
+        using (Assert.EnterMultipleScope())
+        {
+            Assert.That(tx.SenderAddress, Is.EqualTo(TestItem.AddressA));
+            Assert.That(block.GasUsed, Is.EqualTo(GasCostOf.TransactionEip2780));
+        }
+    }
+
+    [Test]
+    public void Corrected_sender_rejects_underpriced_non_self_transfer()
+    {
+        using EvmTestHarness harness = new(Eip2780Spec);
+        harness.WorldState.CreateAccount(TestItem.AddressA, 1_000_000);
+        Transaction tx = Build.A.Transaction
+            .WithTo(TestItem.AddressB)
+            .WithValue(0)
+            .WithGasLimit(GasCostOf.TransactionEip2780)
+            .Signed(harness.Ecdsa, TestItem.PrivateKeyA)
+            .WithSenderAddress(TestItem.AddressB)
+            .TestObject;
+        Block block = harness.CreateBlock(tx);
+
+        TransactionResult result = harness.TxProcessor.Execute(
+            tx,
+            new BlockExecutionContext(block.Header, harness.SpecProvider.GetSpec(block.Header)),
+            NullTxTracer.Instance);
+
+        using (Assert.EnterMultipleScope())
+        {
+            Assert.That(tx.SenderAddress, Is.EqualTo(TestItem.AddressA));
+            Assert.That(result.Error, Is.EqualTo(TransactionResult.ErrorType.GasLimitBelowIntrinsicGas));
+            Assert.That(block.GasUsed, Is.Zero);
+        }
+    }
+
+    [Test]
+    public void Rejected_sender_recovery_retry_does_not_create_account()
+    {
+        using EvmTestHarness harness = new(Eip2780Spec);
+        Transaction tx = Build.A.Transaction
+            .WithTo(TestItem.AddressB)
+            .WithValue(0)
+            .WithGasLimit(GasCostOf.TransactionEip2780)
+            .Signed(harness.Ecdsa, TestItem.PrivateKeyA)
+            .WithSenderAddress(TestItem.AddressA)
+            .TestObject;
+        Block block = harness.CreateBlock(tx);
+
+        TransactionResult result = harness.TxProcessor.BuildUp(
+            tx,
+            new BlockExecutionContext(block.Header, harness.SpecProvider.GetSpec(block.Header)),
+            NullTxTracer.Instance);
+
+        using (Assert.EnterMultipleScope())
+        {
+            Assert.That(result.Error, Is.EqualTo(TransactionResult.ErrorType.GasLimitBelowIntrinsicGas));
+            Assert.That(harness.WorldState.AccountExists(TestItem.AddressA), Is.False);
+        }
     }
 }

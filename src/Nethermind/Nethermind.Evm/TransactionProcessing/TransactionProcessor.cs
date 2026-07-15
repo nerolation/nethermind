@@ -201,6 +201,7 @@ namespace Nethermind.Evm.TransactionProcessing
         [SkipLocalsInit]
         private TransactionResult Execute(Transaction tx, ITxTracer tracer, ExecutionOptions opts, BlockHeader header, IReleaseSpec spec, in IntrinsicGas<TGasPolicy> intrinsicGas)
         {
+            IntrinsicGas<TGasPolicy> validatedIntrinsicGas = intrinsicGas;
             // restore is CallAndRestore - previous call, we will restore state after the execution
             bool restore = opts.HasFlag(ExecutionOptions.Restore);
             // commit - is for standard execute, we will commit the state after execution
@@ -209,13 +210,34 @@ namespace Nethermind.Evm.TransactionProcessing
             bool commit = opts.HasFlag(ExecutionOptions.Commit) || (!opts.HasFlag(ExecutionOptions.SkipValidation) && !spec.IsEip658Enabled);
 
             TransactionResult result;
-            if (!(result = ValidateStatic(tx, header, spec, opts, in intrinsicGas))) return result;
+            result = ValidateStatic(tx, header, spec, opts, in validatedIntrinsicGas);
+            bool retryAfterSenderRecovery = !result
+                && spec.IsEip2780Enabled
+                && tx.IsMessageCall
+                && tx.Signature is not null
+                && tx.SenderAddress is { } sender
+                && !WorldState.AccountExists(sender)
+                && result.Error is TransactionResult.ErrorType.GasLimitBelowIntrinsicGas or TransactionResult.ErrorType.GasLimitBelowFloorGas;
+            if (!result && !retryAfterSenderRecovery) return result;
 
             UInt256 effectiveGasPrice = CalculateEffectiveGasPrice(tx, spec.IsEip1559Enabled, header.BaseFeePerGas, out UInt256 opcodeGasPrice);
 
             UpdateMetrics(opts, effectiveGasPrice);
 
+            bool wasEip2780SelfTransfer = spec.IsEip2780Enabled && tx.To is not null && tx.SenderAddress == tx.To;
+            Snapshot senderRecoverySnapshot = retryAfterSenderRecovery ? WorldState.TakeSnapshot() : Snapshot.Empty;
             bool deleteCallerAccount = RecoverSenderIfNeeded(tx, spec, opts, effectiveGasPrice);
+            bool isEip2780SelfTransfer = spec.IsEip2780Enabled && tx.To is not null && tx.SenderAddress == tx.To;
+            if (wasEip2780SelfTransfer != isEip2780SelfTransfer)
+            {
+                validatedIntrinsicGas = CalculateIntrinsicGas(tx, spec, header.GasLimit);
+            }
+            if ((retryAfterSenderRecovery || wasEip2780SelfTransfer != isEip2780SelfTransfer)
+                && !(result = ValidateStatic(tx, header, spec, opts, in validatedIntrinsicGas)))
+            {
+                if (retryAfterSenderRecovery) WorldState.Restore(senderRecoverySnapshot);
+                return result;
+            }
 
             if (!(result = ValidateSender(tx, header, spec, tracer, opts)) ||
                 !(result = BuyGas(tx, spec, tracer, opts, effectiveGasPrice, out UInt256 premiumPerGas, out UInt256 senderReservedGasPayment, out UInt256 blobBaseFee)) ||
@@ -234,11 +256,11 @@ namespace Nethermind.Evm.TransactionProcessing
             bool commitBeforeExecution = commit && (!useSimpleTransferFastPath || restore || tracer.IsTracingState);
             if (commitBeforeExecution) WorldState.Commit(spec, tracer.IsTracingState ? tracer : NullTxTracer.Instance, commitRoots: false);
 
-            if (!(result = CalculateAvailableGas(tx, spec, in intrinsicGas, out TGasPolicy gasAvailable))) return result;
+            if (!(result = CalculateAvailableGas(tx, spec, in validatedIntrinsicGas, out TGasPolicy gasAvailable))) return result;
 
             return useSimpleTransferFastPath
-                ? ExecuteSimpleTransfer(tx, header, spec, tracer, opts, restore, commit, deleteCallerAccount, recipient!, in intrinsicGas, gasAvailable, in opcodeGasPrice, in premiumPerGas, in senderReservedGasPayment, in blobBaseFee)
-                : ExecuteEvmTransaction(tx, header, spec, tracer, opts, restore, commit, deleteCallerAccount, in intrinsicGas, gasAvailable, in opcodeGasPrice, in premiumPerGas, in senderReservedGasPayment, in blobBaseFee, preloadedCodeInfo, preloadedDelegationAddress);
+                ? ExecuteSimpleTransfer(tx, header, spec, tracer, opts, restore, commit, deleteCallerAccount, recipient!, in validatedIntrinsicGas, gasAvailable, in opcodeGasPrice, in premiumPerGas, in senderReservedGasPayment, in blobBaseFee)
+                : ExecuteEvmTransaction(tx, header, spec, tracer, opts, restore, commit, deleteCallerAccount, in validatedIntrinsicGas, gasAvailable, in opcodeGasPrice, in premiumPerGas, in senderReservedGasPayment, in blobBaseFee, preloadedCodeInfo, preloadedDelegationAddress);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]

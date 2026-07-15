@@ -562,19 +562,29 @@ public struct EthereumGasPolicy : IGasPolicy<EthereumGasPolicy>
 
     public static IntrinsicGas<EthereumGasPolicy> CalculateIntrinsicGas(Transaction tx, IReleaseSpec spec, ulong blockGasLimit)
     {
-        if (Volatile.Read(ref tx.IntrinsicGasMemo) is IntrinsicGasMemo memo && ReferenceEquals(memo.Spec, spec))
+        bool isEip2780SelfTransfer = spec.IsEip2780Enabled && tx.To is not null && tx.SenderAddress == tx.To;
+        if (Volatile.Read(ref tx.IntrinsicGasMemo) is IntrinsicGasMemo memo
+            && ReferenceEquals(memo.Spec, spec)
+            && memo.IsEip2780SelfTransfer == isEip2780SelfTransfer)
         {
             return memo.Gas;
         }
 
-        IntrinsicGas<EthereumGasPolicy> gas = Calculate(tx, spec, blockGasLimit);
-        Volatile.Write(ref tx.IntrinsicGasMemo, new IntrinsicGasMemo(spec, gas));
+        IntrinsicGas<EthereumGasPolicy> gas = Calculate(tx, spec, blockGasLimit, isEip2780SelfTransfer);
+        Volatile.Write(ref tx.IntrinsicGasMemo, new IntrinsicGasMemo(spec, isEip2780SelfTransfer, gas));
         return gas;
     }
 
-    private sealed record IntrinsicGasMemo(IReleaseSpec Spec, IntrinsicGas<EthereumGasPolicy> Gas) : IIntrinsicGasMemo;
+    private sealed record IntrinsicGasMemo(
+        IReleaseSpec Spec,
+        bool IsEip2780SelfTransfer,
+        IntrinsicGas<EthereumGasPolicy> Gas) : IIntrinsicGasMemo;
 
-    private static IntrinsicGas<EthereumGasPolicy> Calculate(Transaction tx, IReleaseSpec spec, ulong blockGasLimit)
+    private static IntrinsicGas<EthereumGasPolicy> Calculate(
+        Transaction tx,
+        IReleaseSpec spec,
+        ulong blockGasLimit,
+        bool isEip2780SelfTransfer)
     {
         ulong tokensInCallData = IntrinsicGasCalculator.CalculateTokensInCallData(tx, spec);
         ulong floorTokensInAccessList = IntrinsicGasCalculator.CalculateFloorTokensInAccessList(tx, spec);
@@ -587,8 +597,8 @@ public struct EthereumGasPolicy : IGasPolicy<EthereumGasPolicy>
                           + CreateCost(tx, spec)
                           + accessListCost
                           + authRegularCost
-                          + Eip2780ExtraGas(tx, spec);
-        ulong floorCost = IntrinsicGasCalculator.CalculateFloorCost(tx, spec, tokensInCallData, floorTokensInAccessList);
+                          + Eip2780ExtraGas(tx, spec, isEip2780SelfTransfer);
+        ulong floorCost = IntrinsicGasCalculator.CalculateFloorCost(tx, spec, tokensInCallData, floorTokensInAccessList, isEip2780SelfTransfer);
         long createStateCost = CreateStateCost(tx, spec);
         long totalStateCost = authStateCost + createStateCost;
         return spec.IsEip8037Enabled
@@ -652,7 +662,7 @@ public struct EthereumGasPolicy : IGasPolicy<EthereumGasPolicy>
     /// State-independent by design: a flat cold touch for a non-self recipient, plus transfer-log and
     /// value-move costs on value transfers. New-account and delegation costs are charged elsewhere.
     /// </remarks>
-    private static ulong Eip2780ExtraGas(Transaction tx, IReleaseSpec spec)
+    private static ulong Eip2780ExtraGas(Transaction tx, IReleaseSpec spec, bool isEip2780SelfTransfer)
     {
         if (!spec.IsEip2780Enabled) return 0;
 
@@ -662,7 +672,7 @@ public struct EthereumGasPolicy : IGasPolicy<EthereumGasPolicy>
             return hasValue ? GasCostOf.TransferLogEip2780 : 0;
 
         // Self-transfers coalesce into the sender leaf write already priced into TX_BASE_COST.
-        if (tx.SenderAddress == tx.To) return 0;
+        if (isEip2780SelfTransfer) return 0;
 
         ulong cost = ColdAccountAccessCost(spec);
         if (hasValue)

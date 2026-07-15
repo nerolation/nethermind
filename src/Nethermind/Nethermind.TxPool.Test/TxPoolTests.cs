@@ -124,6 +124,75 @@ namespace Nethermind.TxPool.Test
             }
         }
 
+        [TestCase(true)]
+        [TestCase(false)]
+        public void should_validate_eip2780_intrinsic_gas_after_sender_recovery(bool selfTransfer)
+        {
+            _txPool = CreatePool(null, new TestSpecProvider(Amsterdam.Instance));
+            Address sender = TestItem.PrivateKeyA.Address;
+            Transaction tx = Build.A.Transaction
+                .WithTo(selfTransfer ? sender : TestItem.AddressB)
+                .WithValue(0)
+                .WithGasLimit(GasCostOf.TransactionEip2780)
+                .Signed(_ethereumEcdsa, TestItem.PrivateKeyA)
+                .TestObject;
+            EnsureSenderBalance(sender, UInt256.MaxValue);
+
+            AcceptTxResult result = _txPool.SubmitTx(tx, TxHandlingOptions.PersistentBroadcast);
+            AcceptTxResult expected = selfTransfer ? AcceptTxResult.Accepted : AcceptTxResult.Invalid;
+
+            using (Assert.EnterMultipleScope())
+            {
+                Assert.That(tx.SenderAddress, Is.EqualTo(sender));
+                Assert.That(result, Is.EqualTo(expected));
+                Assert.That(_txPool.GetPendingTransactionsCount(), Is.EqualTo(selfTransfer ? 1 : 0));
+            }
+        }
+
+        [Test]
+        public void should_reject_unsigned_eip2780_transaction_before_sender_recovery()
+        {
+            _txPool = CreatePool(null, new TestSpecProvider(Amsterdam.Instance));
+            Transaction tx = Build.A.Transaction
+                .WithTo(TestItem.AddressA)
+                .WithValue(0)
+                .WithGasLimit(GasCostOf.TransactionEip2780)
+                .WithSenderAddress(null)
+                .TestObject;
+
+            AcceptTxResult result = _txPool.SubmitTx(tx, TxHandlingOptions.PersistentBroadcast);
+
+            Assert.That(result, Is.EqualTo(AcceptTxResult.Invalid));
+        }
+
+        [Test]
+        public void should_validate_eip2780_intrinsic_cap_after_sender_recovery()
+        {
+            const long maxTxSize = 1_000_000;
+            IReleaseSpec spec = Amsterdam.Instance;
+            ulong floorCostPerByte = spec.GasCosts.TotalCostFloorPerToken * spec.GasCosts.TxDataNonZeroMultiplier;
+            int dataLength = checked((int)((Eip7825Constants.DefaultTxGasLimitCap - GasCostOf.TransactionEip2780) / floorCostPerByte));
+            _txPool = CreatePool(new TxPoolConfig { MaxTxSize = maxTxSize }, new TestSpecProvider(spec));
+            Address sender = TestItem.PrivateKeyA.Address;
+            Transaction tx = Build.A.Transaction
+                .WithTo(sender)
+                .WithValue(0)
+                .WithData(new byte[dataLength])
+                .WithGasLimit(Eip7825Constants.DefaultTxGasLimitCap)
+                .Signed(_ethereumEcdsa, TestItem.PrivateKeyA)
+                .TestObject;
+            EnsureSenderBalance(sender, UInt256.MaxValue);
+
+            AcceptTxResult result = _txPool.SubmitTx(tx, TxHandlingOptions.PersistentBroadcast);
+
+            using (Assert.EnterMultipleScope())
+            {
+                Assert.That(tx.SenderAddress, Is.EqualTo(sender));
+                Assert.That(result, Is.EqualTo(AcceptTxResult.Accepted));
+                Assert.That(_txPool.GetPendingTransactionsCount(), Is.EqualTo(1));
+            }
+        }
+
         [Test]
         public void should_not_ignore_old_scheme_signatures()
         {

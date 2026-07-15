@@ -9,6 +9,8 @@ public ref struct TxFilteringState(Transaction tx, IAccountStateProvider account
 {
     private AccountStruct _senderAccount;
 
+    internal bool ValidateTransactionAfterSenderRecovery { get; set; }
+
     public AccountStruct SenderAccount
     {
         get

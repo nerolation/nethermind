@@ -111,16 +111,28 @@ public class CompositeTxValidator(params ITxValidator[] validators) : ITxValidat
 
     public ValidationResult IsWellFormed(Transaction transaction, IReleaseSpec releaseSpec, ulong blockGasLimit)
     {
+        ValidationResult deferredIntrinsicResult = ValidationResult.Success;
         foreach (ITxValidator validator in validators)
         {
             ValidationResult isWellFormed = validator.IsWellFormed(transaction, releaseSpec, blockGasLimit);
             if (!isWellFormed)
             {
+                // EIP-2780 intrinsic gas depends on the recovered sender. Keep validating the
+                // transaction shape and signature before TxPool defers this result to sender recovery.
+                if (validator is IntrinsicGasTxValidator
+                    && releaseSpec.IsEip2780Enabled
+                    && transaction.IsMessageCall
+                    && transaction.SenderAddress is null)
+                {
+                    deferredIntrinsicResult = isWellFormed;
+                    continue;
+                }
+
                 return isWellFormed;
             }
         }
 
-        return ValidationResult.Success;
+        return deferredIntrinsicResult;
     }
 }
 

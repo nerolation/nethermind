@@ -115,10 +115,15 @@ public static class IntrinsicGasCalculator
         return totalZeros + ((ulong)data.Length - totalZeros) * GasCostOf.TxDataNonZeroMultiplierEip2028;
     }
 
-    internal static ulong CalculateFloorCost(Transaction transaction, IReleaseSpec spec, ulong tokensInCallData, ulong floorTokensInAccessList)
+    internal static ulong CalculateFloorCost(
+        Transaction transaction,
+        IReleaseSpec spec,
+        ulong tokensInCallData,
+        ulong floorTokensInAccessList,
+        bool isEip2780SelfTransfer)
     {
         // The floor tracks the reduced EIP-2780 base plus state-independent transaction setup costs.
-        ulong floorBase = CalculateFloorBase(transaction, spec);
+        ulong floorBase = CalculateFloorBase(transaction, spec, isEip2780SelfTransfer);
         return spec switch
         {
             { IsEip7976Enabled: true } => floorBase + (CalculateFloorTokensInCallData(transaction, spec) + floorTokensInAccessList) * spec.GasCosts.TotalCostFloorPerToken,
@@ -128,7 +133,7 @@ public static class IntrinsicGasCalculator
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static ulong CalculateFloorBase(Transaction transaction, IReleaseSpec spec)
+    private static ulong CalculateFloorBase(Transaction transaction, IReleaseSpec spec, bool isEip2780SelfTransfer)
     {
         if (!spec.IsEip2780Enabled)
         {
@@ -148,7 +153,7 @@ public static class IntrinsicGasCalculator
                 floorBase += GasCostOf.TransferLogEip2780;
             }
         }
-        else if (transaction.SenderAddress != transaction.To)
+        else if (!isEip2780SelfTransfer)
         {
             floorBase += spec.IsEip8038Enabled
                 ? Eip8038Constants.ColdAccountAccess
