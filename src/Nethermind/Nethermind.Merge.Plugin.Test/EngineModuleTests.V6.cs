@@ -539,7 +539,10 @@ public partial class EngineModuleTests
 
         using PayloadBodiesV2DirectResponse response = new(items);
 
-        await AssertStreamedJsonMatchesSerializer(response);
+        string json = await AssertStreamedJsonMatchesSerializer(response);
+
+        // V2 bodies must always carry the field; a missing BAL is serialized as an explicit null.
+        Assert.That(json, Does.Contain("\"blockAccessList\":null"));
     }
 
     [Test]

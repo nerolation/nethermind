@@ -1208,28 +1208,25 @@ public partial class EthRpcModule(
         }
     }
 
-    public ResultWrapper<ReadOnlyBlockAccessList?> eth_getBlockAccessListByHash(Hash256 blockHash)
-        => GetBlockAccessList(blockHash, null);
-
-    public ResultWrapper<ReadOnlyBlockAccessList?> eth_getBlockAccessListByNumber(ulong blockNumber)
-        => GetBlockAccessList(null, blockNumber);
-    private ResultWrapper<ReadOnlyBlockAccessList?> GetBlockAccessList(Hash256? blockHash, ulong? blockNumber)
+    public ResultWrapper<AccountAccessForRpc[]?> eth_getBlockAccessList(BlockParameter blockParameter)
     {
-        Block block = blockHash is null ? _blockFinder.FindBlock(blockNumber!.Value) : _blockFinder.FindBlock(blockHash);
-        if (block is null)
+        SearchResult<Block> searchResult = _blockFinder.SearchForBlock(blockParameter);
+        if (searchResult.IsError)
         {
-            return ResultWrapper<ReadOnlyBlockAccessList?>.Fail("Resource not found", ErrorCodes.BlockAccessListResourceNotFound);
-        }
-        else if (block.BlockAccessListHash is null)
-        {
-            return ResultWrapper<ReadOnlyBlockAccessList?>.Fail("Resource not found", ErrorCodes.BlockAccessListResourceNotFound);
+            return ResultWrapper<AccountAccessForRpc[]?>.Success(null);
         }
 
-        ReadOnlyBlockAccessList? bal = blockchainBridge.GetBlockAccessList(block.Number, block.Hash);
+        Block block = searchResult.Object!;
+        if (block.BlockAccessListHash is null)
+        {
+            return ResultWrapper<AccountAccessForRpc[]?>.Fail("Resource not found", ErrorCodes.BlockAccessListResourceNotFound);
+        }
+
+        ReadOnlyBlockAccessList? bal = _blockchainBridge.GetBlockAccessList(block.Number, block.Hash);
 
         return bal is null ?
-            ResultWrapper<ReadOnlyBlockAccessList?>.Fail(ErrorMessages.PrunedHistoryUnavailable, ErrorCodes.PrunedHistoryUnavailable)
-            : ResultWrapper<ReadOnlyBlockAccessList?>.Success(bal);
+            ResultWrapper<AccountAccessForRpc[]?>.Fail(ErrorMessages.PrunedHistoryUnavailable, ErrorCodes.PrunedHistoryUnavailable)
+            : ResultWrapper<AccountAccessForRpc[]?>.Success(AccountAccessForRpc.FromBlockAccessList(bal));
     }
 
     public ResultWrapper<EthCapabilities> eth_capabilities() =>

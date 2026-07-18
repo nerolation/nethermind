@@ -38,5 +38,6 @@ public class ExecutionPayloadBodyV2Result
     [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
     public Withdrawal[]? Withdrawals { get; set; }
 
+    [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
     public byte[]? BlockAccessList { get; set; }
 }
